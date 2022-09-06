@@ -2,6 +2,7 @@ package pornhub
 
 import (
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 )
@@ -62,6 +63,28 @@ func isVideo(url string) bool {
 
 func isVideoPhoto(url string) bool {
 	return strings.Contains(url, VIDEO_IMAGE_URL) && filepath.Ext(url) == PHOTO_EXT
+}
+
+func getRequest(str string, payload map[string]string) (*http.Request, error) {
+	u, err := url.Parse(str)
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	for k, v := range payload {
+		q.Add(k, v)
+	}
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range HEADERS {
+		req.Header.Set(k, v)
+	}
+
+	return req, err
 }
 
 type DownloadConfig struct {
