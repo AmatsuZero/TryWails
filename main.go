@@ -2,6 +2,7 @@ package main
 
 import (
 	"doodle/nhentai"
+	"doodle/pornhub"
 	_ "embed"
 	"github.com/wailsapp/wails"
 	"net/http"
@@ -33,6 +34,13 @@ func init() {
 }
 
 func main() {
+	pb := pornhub.NewPornHub([]string{"Kerry Marrie"})
+	config := pornhub.DownloadConfig{Page: 5, Quantity: 10}
+	pb.Photos.GetPhotos(config, func(url string, err error) bool {
+		println(url)
+		return false
+	})
+
 	// 获取 mode
 	wails.BuildMode = os.Getenv("BuildMode")
 	app := wails.CreateApp(&wails.AppConfig{

@@ -1,6 +1,7 @@
 package pornhub
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -8,23 +9,23 @@ import (
 )
 
 const (
-	BASE_URL   = "https://pornhub.com"
-	PHOTO_EXT  = ".jpg" // for validation
+	BaseUrl    = "https://pornhub.com"
+	PhotoExt   = ".jpg" // for validation
 	SEARCH_URL = "/search"
 
-	PORNSTARS_URL  = "/pornstars"
-	PORNSTAR_URL   = "/pornstar/" // for validation
-	MODEL_URL      = "/model/"
-	PORNSTAR_PHOTO = ".phncdn.com/" // for validation
+	PORNSTARS_URL = "/pornstars"
+	PornStarUrl   = "/pornstar/" // for validation
+	ModelUrl      = "/model/"
+	PornStarPhoto = ".phncdn.com/" // for validation
 
-	VIDEOS_URL      = "/video"
-	VIDEO_URL       = "/view_video.php?viewkey=" // for validation
-	VIDEO_IMAGE_URL = ".phncdn.com/videos/"      // for validation
+	VIDEOS_URL    = "/video"
+	VideoUrl      = "/view_video.php?viewkey=" // for validation
+	VideoImageUrl = ".phncdn.com/videos/"      // for validation
 
-	ALBUMS_URL      = "/albums/"
-	ALBUM_URL       = "/album/"                 // for validation
-	ALBUM_PHOTO_URL = "phncdn.com/pics/albums/" // for validation
-	PHOTO_PREVIEW   = "/photo/"                 // for validation
+	AlbumsUrl     = "/albums/"
+	AlbumUrl      = "/album/"                 // for validation
+	AlbumPhotoUrl = "phncdn.com/pics/albums/" // for validation
+	PhotoPreview  = "/photo/"                 // for validation
 
 	TIME_TO_WAIT = 3
 )
@@ -38,34 +39,34 @@ func init() {
 }
 
 func isAlbum(url string) bool {
-	return strings.Contains(url, ALBUMS_URL)
+	return strings.Contains(url, AlbumUrl)
 }
 
 func isPhotoPreview(url string) bool {
-	return strings.Contains(url, PHOTO_PREVIEW)
+	return strings.Contains(url, PhotoPreview)
 }
 
 func isPhoto(url string) bool {
-	return strings.Contains(url, ALBUM_PHOTO_URL) && filepath.Ext(url) == PHOTO_EXT
+	return strings.Contains(url, AlbumPhotoUrl) && filepath.Ext(url) == PhotoExt
 }
 
 func isStar(url string) bool {
-	return strings.Contains(url, PORNSTAR_URL) || strings.Contains(url, MODEL_URL)
+	return strings.Contains(url, PornStarUrl) || strings.Contains(url, ModelUrl)
 }
 
 func isStarPhoto(url string) bool {
-	return strings.Contains(url, PORNSTAR_PHOTO) && filepath.Ext(url) == PHOTO_EXT
+	return strings.Contains(url, PornStarPhoto) && filepath.Ext(url) == PhotoExt
 }
 
 func isVideo(url string) bool {
-	return strings.Contains(url, VIDEO_URL)
+	return strings.Contains(url, VideoUrl)
 }
 
 func isVideoPhoto(url string) bool {
-	return strings.Contains(url, VIDEO_IMAGE_URL) && filepath.Ext(url) == PHOTO_EXT
+	return strings.Contains(url, VideoImageUrl) && filepath.Ext(url) == PhotoExt
 }
 
-func getRequest(str string, payload map[string]string) (*http.Request, error) {
+func getRequest(str string, payload map[string]string, ctx context.Context) (*http.Request, error) {
 	u, err := url.Parse(str)
 	if err != nil {
 		return nil, err
@@ -80,6 +81,9 @@ func getRequest(str string, payload map[string]string) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+	if ctx != nil {
+		req = req.WithContext(ctx)
+	}
 	for k, v := range HEADERS {
 		req.Header.Set(k, v)
 	}
@@ -89,12 +93,70 @@ func getRequest(str string, payload map[string]string) (*http.Request, error) {
 
 type DownloadConfig struct {
 	Quantity, Page int
-	InfinityRetry  bool
+	Infinity       bool
 }
 
 type PornHub struct {
 	client *http.Client
 	Photos *Photo
+}
+
+func NewQueue() *DispatchQueue {
+	q := &DispatchQueue{work: make(chan func()), quit: make(chan bool), Working: true}
+	go func() {
+		var job func()
+		for {
+			select {
+			case job = <-q.work:
+			case <-q.quit:
+				q.Working = false
+				return
+
+			}
+			job()
+		}
+	}()
+	return q
+}
+
+func (q *DispatchQueue) Invoke(work func()) {
+	q.work <- work
+}
+
+func (q *DispatchQueue) Stop() {
+	if !q.Working {
+		return
+	}
+	q.quit <- true
+}
+
+func (q *DispatchQueue) Start() {
+	if q.Working {
+		return
+	}
+
+	go func() {
+		var job func()
+
+		q.Working = true
+
+		for {
+			select {
+			case job = <-q.work:
+			case <-q.quit:
+				q.Working = false
+				return
+
+			}
+			job()
+		}
+	}()
+}
+
+type DispatchQueue struct {
+	work    chan func() // 任务队列
+	quit    chan bool   // 退出标志
+	Working bool        // 运行标志
 }
 
 func NewPornHub(keywords []string) *PornHub {

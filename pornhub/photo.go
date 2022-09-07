@@ -1,10 +1,12 @@
 package pornhub
 
 import (
+	"context"
 	"github.com/PuerkitoBio/goquery"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 type Photo struct {
@@ -19,24 +21,78 @@ func newPhoto(c *http.Client, kw []string) *Photo {
 	}
 }
 
-func (p *Photo) GetPhotos(config DownloadConfig) {
-	resp, err := p.loadAlbumPage(config.Page)
-	if err != nil {
+func (p *Photo) GetPhotos(config DownloadConfig, proc func(url string, err error) bool) {
+	ctx, cancel := context.WithCancel(context.Background())
+	quantity := uint64(config.Quantity)
 
-	}
-	defer resp.Body.Close()
-
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return
+	if quantity < 1 {
+		quantity = 1
 	}
 
-	for _, ambumURL := range p.scrapAlbumsURL(doc) {
+	var found uint64 = 0
+	queue := NewQueue()
 
+	quit := func() {
+		cancel()
+		queue.Stop()
+	}
+
+	page := config.Page
+	if page < 1 {
+		page = 1
+	}
+
+	for executed := false; !executed || config.Infinity; page++ {
+		executed = true
+
+		resp, err := p.loadAlbumPage(page, ctx)
+		if err != nil {
+			if proc("", err) {
+				quit()
+				return
+			}
+			continue
+		}
+
+		urls, err := p.scrapAlbumsURL(resp)
+		if err != nil {
+			if proc("", err) {
+				quit()
+				return
+			}
+			continue
+		}
+
+		for _, albumURL := range urls {
+			queue.Invoke(func() {
+				u, err := p.scrapAlbumPhotos(albumURL, ctx)
+				if err != nil {
+					if proc(u, err) {
+						quit()
+					}
+					return
+				}
+
+				u, err = p.scrapPhotoFullURL(u, ctx)
+				if err != nil {
+					if proc(u, err) {
+						quit()
+					}
+					return
+				}
+
+				shouldCancel := proc(u, err)
+				atomic.AddUint64(&found, 1)
+				if shouldCancel || found == quantity {
+					quit()
+					return
+				}
+			})
+		}
 	}
 }
 
-func (p *Photo) loadAlbumPage(pageNum int) (*http.Response, error) {
+func (p *Photo) loadAlbumPage(pageNum int, ctx context.Context) (*http.Response, error) {
 	payload := map[string]string{
 		"search": "",
 		"page":   strconv.Itoa(pageNum),
@@ -55,16 +111,20 @@ func (p *Photo) loadAlbumPage(pageNum int) (*http.Response, error) {
 		payload["search"] = strings.Join(searchWords, "+")
 	}
 
-	req, err := getRequest(BASE_URL+ALBUMS_URL+strings.Join(categories, "-"), payload)
+	req, err := getRequest(BaseUrl+AlbumsUrl+strings.Join(categories, "-"), payload, ctx)
 	if err != nil {
 		return nil, err
 	}
 	return p.client.Do(req)
 }
 
-func (p *Photo) scrapAlbumsURL(doc *goquery.Document) (albumsURL []string) {
-	doc.Find("div").
-		ChildrenFiltered(".photoAlbumListBlock").
+func (p *Photo) scrapAlbumsURL(resp *http.Response) (albumsURL []string, err error) {
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	defer resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	doc.Find("div").Filter(".photoAlbumListBlock").
 		Each(func(i int, selection *goquery.Selection) {
 			selection.Find("a").
 				EachWithBreak(func(i int, selection *goquery.Selection) bool {
@@ -72,15 +132,15 @@ func (p *Photo) scrapAlbumsURL(doc *goquery.Document) (albumsURL []string) {
 					if !ok || !isAlbum(u) {
 						return true
 					}
-					albumsURL = append(albumsURL, BASE_URL+u)
+					albumsURL = append(albumsURL, BaseUrl+u)
 					return false
 				})
 		})
 	return
 }
 
-func (p *Photo) scrapPhotoFullURL(previewURL string) (imgURL string, err error) {
-	req, err := getRequest(previewURL, nil)
+func (p *Photo) scrapPhotoFullURL(previewURL string, ctx context.Context) (imgURL string, err error) {
+	req, err := getRequest(previewURL, nil, ctx)
 	if err != nil {
 		return "", err
 	}
@@ -106,6 +166,30 @@ func (p *Photo) scrapPhotoFullURL(previewURL string) (imgURL string, err error) 
 	return imgURL, err
 }
 
-func (p *Photo) scrapeAlbumPhotos(albumURL string) {
+func (p *Photo) scrapAlbumPhotos(albumURL string, ctx context.Context) (string, error) {
+	r, err := getRequest(albumURL, nil, ctx)
+	if err != nil {
+		return "", err
+	}
 
+	resp, err := p.client.Do(r)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	u := ""
+	doc.Find("a").EachWithBreak(func(i int, selection *goquery.Selection) bool {
+		a, ok := selection.Attr("href")
+		if !ok || !isPhotoPreview(a) {
+			return true
+		}
+		u = BaseUrl + a
+		return false
+	})
+	return u, nil
 }
